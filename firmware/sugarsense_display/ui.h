@@ -143,6 +143,7 @@ struct View {
   Status st;
   int64_t nowMs;
   int tzMin;
+  bool clock12 = false;    // the clock as 9:41 PM instead of 21:41
   int graphHours;
   bool showGraph = true;   // false = numbers only: no graph, a larger number in the middle
   const char *personLabel = nullptr;   // the single view of a followed person: their name in place of the wordmark
@@ -229,10 +230,107 @@ static void drawDots(uint16_t ink, int alpha) {
   if (updateHint) gx::disc(W - 9, 13, 3.6f, ink == C_DIM ? C_BRAND : ink, 255);
 }
 
+// The time as one string: "21:41", or "9:41 PM" on a 12-hour clock.
 static void clockText(const View &v, char *out, size_t n) {
   int hh, mm;
   ss::localHourMinute(v.nowMs, v.tzMin, &hh, &mm);
-  snprintf(out, n, "%02d:%02d", hh, mm);
+  ss::formatClock(out, n, hh, mm, v.clock12);
+}
+
+// The small clock in the top row ends at this x; the wordmark starts at 14.
+static const int SMALL_CLOCK_RIGHT = 56;   // from the right edge
+static const int LOCKUP_X = 14;
+
+static int lockupW() { return gx::textW(F_MARK, "M") + 7 + gx::textW(F_MED, "Sugar Sense"); }
+
+// Layout that must hold still from minute to minute is sized from the widest
+// time of the mode, never from the time on screen: every digit as wide as the
+// font's widest one.
+static char widestDigit(const AAFont &f) {
+  char best = '0', d[2] = {'0', 0};
+  int w = -1;
+  for (char c = '0'; c <= '9'; c++) {
+    d[0] = c;
+    const int cw = gx::textW(f, d);
+    if (cw > w) {
+      w = cw;
+      best = c;
+    }
+  }
+  return best;
+}
+
+static int widestDigitsW(const AAFont &f) {
+  const char c = widestDigit(f);
+  char s[8];
+  snprintf(s, sizeof(s), "%c%c:%c%c", c, c, c, c);
+  return gx::textW(f, s);
+}
+
+static int widestTimeW(const AAFont &f, bool clock12) {
+  int w = widestDigitsW(f);
+  if (clock12) {
+    const int am = gx::textW(f, " AM"), pm = gx::textW(f, " PM");
+    w += am > pm ? am : pm;
+  }
+  return w;
+}
+
+// The small clock's font. The 24-hour clock keeps the usual one. A 12-hour
+// time is wider: it keeps the usual font where its widest form clears the
+// wordmark by 10 px (the wide screen) and takes the smaller one where it
+// would not (the upright screen). One font per mode and screen, at every
+// minute.
+static const AAFont &smallClockFont(bool clock12) {
+  if (!clock12) return F_MED;
+  const bool fits = W - SMALL_CLOCK_RIGHT - widestTimeW(F_MED, true) >= LOCKUP_X + lockupW() + 10;
+  return fits ? F_MED : F_SMALL;
+}
+
+static void drawSmallClock(const View &v, uint16_t ink, int alpha) {
+  if (!v.st.timeSynced) return;
+  char t[12];
+  clockText(v, t, sizeof(t));
+  gx::textR(smallClockFont(v.clock12), W - SMALL_CLOCK_RIGHT, 31, t, ink, alpha);
+}
+
+// The big clock (the Night scene). Its font carries digits only, so on a
+// 12-hour clock the AM / PM marker stands beside the digits in the medium
+// font, on the same baseline, and the two are centered as one group.
+static const int BIG_CLOCK_GAP = 8;
+
+struct BigClock {
+  char digits[8];
+  const char *marker;   // "AM" / "PM", or nullptr
+  int w;                // the whole group
+};
+
+static BigClock bigClock(const View &v, bool withMarker = true) {
+  BigClock c;
+  int hh, mm;
+  ss::localHourMinute(v.nowMs, v.tzMin, &hh, &mm);
+  ss::formatClockDigits(c.digits, sizeof(c.digits), hh, mm, v.clock12);
+  c.marker = (v.clock12 && withMarker) ? ss::meridiem(hh) : nullptr;
+  c.w = gx::textW(F_CLOCK, c.digits) + (c.marker ? BIG_CLOCK_GAP + gx::textW(F_MED, c.marker) : 0);
+  return c;
+}
+
+// `withMarker` false leaves the marker out: the split screen's header does
+// that while its "No Wi-Fi" label is up, so the group is no wider there than
+// the 24-hour clock.
+static void drawBigClock(const View &v, int cx, int base, uint16_t ink, int alpha, bool withMarker = true) {
+  const BigClock c = bigClock(v, withMarker);
+  const int end = gx::text(F_CLOCK, cx - c.w / 2, base, c.digits, ink, alpha);
+  if (c.marker) gx::text(F_MED, end + BIG_CLOCK_GAP, base, c.marker, ink, alpha);
+}
+
+// The room the big clock needs beside it. On a 12-hour clock the widest
+// group of the mode, so a name next to the clock is cut the same way at 9:59
+// and at 10:00; the 24-hour clock is measured as it always was.
+static int bigClockRoomW(const View &v) {
+  if (!v.clock12) return bigClock(v).w;
+  const int am = gx::textW(F_MED, "AM"), pm = gx::textW(F_MED, "PM");
+  return widestDigitsW(F_CLOCK) + BIG_CLOCK_GAP + (am > pm ? am : pm);
 }
 
 // ---- the headline reading ---------------------------------------------------
@@ -435,9 +533,15 @@ static void drawTrend(const Rect &r, const View &v, uint16_t ink, int cardAlpha,
         int hour = (int)((((t + tz) / 3600000) % 24 + 24) % 24);
         if (hour % step) continue;
         int x = (int)(X(t) + 0.5f);
-        if (x < px0 + 8 || x > px1 - 8) continue;
-        char hb[4];
-        snprintf(hb, sizeof(hb), "%02d", hour);
+        // Every hour of a short window: the bare number. A 12 or 24 hour
+        // window on a 12-hour clock names the half of the day ("6 PM"), or
+        // the same numbers would stand twice on the axis.
+        char hb[8];
+        const bool named = v.clock12 && step > 1;
+        if (named) ss::formatHourMark(hb, sizeof(hb), hour, true);
+        else ss::formatHourShort(hb, sizeof(hb), hour, v.clock12);
+        const int half = named ? (gx::textW(F_SMALL, hb) + 1) / 2 : 8;
+        if (x < px0 + half || x > px1 - half) continue;
         gx::textC(F_SMALL, x, r.y + r.h - 9, hb, ink, 150);
       }
     }
@@ -551,11 +655,7 @@ static void drawDay(const View &v) {
   else if (v.personLabel) drawPersonLabel(v, ink, 236);
   else drawLockup(14, 31, ink, ink, ink, 236);
   drawDots(ink, 190);
-  if (v.st.timeSynced) {
-    char t[8];
-    clockText(v, t, sizeof(t));
-    gx::textR(F_MED, W - 56, 31, t, ink, 190);
-  }
+  drawSmallClock(v, ink, 190);
 
   if (h.fresh) {
     drawNumber(W / 2, L.numBase, h, ns, ink);
@@ -584,19 +684,13 @@ static void drawNight(const View &v) {
     // to the room on its left, in the smaller font.
     const int clockTop = L.clockBase - 44;
     if (v.st.timeSynced && clockTop < 40) {
-      char t[8];
-      clockText(v, t, sizeof(t));
-      drawPersonLabel(v, C_DIM, 255, (W - gx::textW(F_CLOCK, t)) / 2 - 14 - 12, &F_SMALL);
+      drawPersonLabel(v, C_DIM, 255, (W - bigClockRoomW(v)) / 2 - 14 - 12, &F_SMALL);
     } else {
       drawPersonLabel(v, C_DIM, 255);
     }
   }
   drawDots(C_DIM, 150);
-  if (v.st.timeSynced) {
-    char t[8];
-    clockText(v, t, sizeof(t));
-    gx::textC(F_CLOCK, W / 2, L.clockBase, t, ink, 204);
-  }
+  if (v.st.timeSynced) drawBigClock(v, W / 2, L.clockBase, ink, 204);
 
   if (h.fresh) {
     if (h.zone != ss::ZONE_IN_RANGE) gx::glow(W / 2, L.numBase - ns.cap / 2, ns.cap * 1.5f, ns.cap * 1.5f, ink, 36);
@@ -680,7 +774,7 @@ static void drawChart(const Rect &r, const View &v, bool fresh) {
       if (x < px0 + 18 || x > px1 - 18) continue;
       gx::rect(x, py0, 1, py1 - py0, C_WHITE, 12);
       char hb[8];
-      snprintf(hb, sizeof(hb), "%02d:00", hour);
+      ss::formatHourMark(hb, sizeof(hb), hour, v.clock12);
       gx::textC(F_SMALL, x, r.y + r.h - 10, hb, C_FAINT);
     }
   }
@@ -809,11 +903,7 @@ static void drawDark(const View &v) {
   else if (v.personLabel) drawPersonLabel(v, C_TEXT, 230);
   else drawLockup(14, 31, C_BRAND, C_LOGO_SUGAR, C_BRAND);
   drawDots(C_DIM, 255);
-  if (v.st.timeSynced) {
-    char t[8];
-    clockText(v, t, sizeof(t));
-    gx::textR(F_MED, W - 56, 31, t, C_TEXT, 210);
-  }
+  drawSmallClock(v, C_TEXT, 210);
   stageEnd(0);
 
   if (h.fresh) {
@@ -979,23 +1069,16 @@ static NumStyle tileNum(bool mmol, int w, int h) {
 static const int SPLIT_TOP = 48, SPLIT_TOP_NIGHT = 78;
 
 static void drawSplitHeader(const View &v, int look) {
-  char t[8];
   if (look == LOOK_NIGHT) {
     if (!v.st.wifi || !v.st.apiOk) drawLinkWarning(v, C_DIM, 255);
     drawDots(C_DIM, 150);
-    if (v.st.timeSynced) {
-      clockText(v, t, sizeof(t));
-      gx::textC(F_CLOCK, W / 2, 62, t, C_TEXT, 150);
-    }
+    if (v.st.timeSynced) drawBigClock(v, W / 2, 62, C_TEXT, 150, v.st.wifi && v.st.apiOk);
     return;
   }
   if (!v.st.wifi || !v.st.apiOk) drawLinkWarning(v, C_TEXT, 255);
   else drawLockup(14, 31, C_BRAND, C_LOGO_SUGAR, C_BRAND);
   drawDots(C_DIM, 255);
-  if (v.st.timeSynced) {
-    clockText(v, t, sizeof(t));
-    gx::textR(F_MED, W - 56, 31, t, C_TEXT, 210);
-  }
+  drawSmallClock(v, C_TEXT, 210);
 }
 
 // One tile: the name, the number with its arrow, the change and the age. On

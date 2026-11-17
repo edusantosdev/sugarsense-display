@@ -71,7 +71,10 @@ time servers `pool.ntp.org` and `time.google.com` for the clock; nothing else.
     hours, or Off), screen rotation, sound (with the small speaker plugged into
     the board's speaker socket: a soft tick on a tap, a chime when Wi-Fi joins
     and when the display is paired).
-  - **Night:** when the night starts and ends, and how dim the screen gets.
+  - **Night:** when the night starts and ends, how dim the screen gets, and
+    **Clock**: 24-hour (21:41, the default) or 12-hour (9:41 PM). It changes
+    every time on the display: the clock in each scene, the hours under the
+    graph and the two night hours on this page.
   - **System:** the time zone (Auto, or Manual with an offset you set), Wi-Fi,
     disconnect, and an Update row when a newer version is out.
 - The home screen itself is for looking: a touch anywhere on it only brings the

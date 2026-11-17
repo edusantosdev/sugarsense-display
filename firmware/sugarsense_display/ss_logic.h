@@ -145,6 +145,39 @@ static inline void localHourMinute(int64_t nowMs, int tzMinutes, int *hour, int 
   *minute = (int)((day % 3600) / 60);
 }
 
+// The clock as people read it. On a 12-hour clock midnight is 12 AM and noon
+// is 12 PM.
+static inline int hourOfDay(int hour24) { return ((hour24 % 24) + 24) % 24; }
+static inline int hour12(int hour24) {
+  const int h = hourOfDay(hour24) % 12;
+  return h == 0 ? 12 : h;
+}
+static inline const char *meridiem(int hour24) { return hourOfDay(hour24) >= 12 ? "PM" : "AM"; }
+// The digits alone: "21:41" or "9:41". The big clock's font carries digits
+// only, so its AM / PM marker is drawn apart, beside them.
+static inline void formatClockDigits(char *out, size_t n, int hour24, int minute, bool clock12) {
+  if (clock12) snprintf(out, n, "%d:%02d", hour12(hour24), minute);
+  else snprintf(out, n, "%02d:%02d", hour24, minute);
+}
+// The whole time as one string: "21:41" or "9:41 PM".
+static inline void formatClock(char *out, size_t n, int hour24, int minute, bool clock12) {
+  formatClockDigits(out, n, hour24, minute, clock12);
+  if (!clock12) return;
+  const size_t len = strlen(out);
+  if (len < n) snprintf(out + len, n - len, " %s", meridiem(hour24));
+}
+// A whole hour as a bare number, where there is no room for more (the
+// trend strip of the Night and Color scenes): "18", or "6" on a 12-hour clock.
+static inline void formatHourShort(char *out, size_t n, int hour24, bool clock12) {
+  if (clock12) snprintf(out, n, "%d", hour12(hour24));
+  else snprintf(out, n, "%02d", hour24);
+}
+// A whole hour under the graph: "14:00" or "2 PM".
+static inline void formatHourMark(char *out, size_t n, int hour24, bool clock12) {
+  if (clock12) snprintf(out, n, "%d %s", hour12(hour24), meridiem(hour24));
+  else snprintf(out, n, "%02d:00", hour24);
+}
+
 // The night window [start, end) in local hours; start == end means never.
 static inline bool isNightHour(int hour, int start, int end) {
   if (start == end) return false;

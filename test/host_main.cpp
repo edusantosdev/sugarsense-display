@@ -104,6 +104,51 @@ static int runLogic() {
   CHECK(ss::isNightHour(23, 23, 7) && ss::isNightHour(3, 23, 7) && !ss::isNightHour(7, 23, 7) && !ss::isNightHour(12, 23, 7));
   CHECK(ss::isNightHour(2, 1, 5) && !ss::isNightHour(5, 1, 5) && !ss::isNightHour(9, 9, 9));
 
+  // the 12-hour clock: midnight is 12 AM, noon is 12 PM
+  CHECK(ss::hour12(0) == 12 && ss::hour12(1) == 1 && ss::hour12(11) == 11 && ss::hour12(12) == 12 && ss::hour12(13) == 1 && ss::hour12(23) == 11);
+  CHECK(std::string(ss::meridiem(0)) == "AM" && std::string(ss::meridiem(11)) == "AM" && std::string(ss::meridiem(12)) == "PM" && std::string(ss::meridiem(23)) == "PM");
+  {
+    char c[12];
+    ss::formatClock(c, sizeof(c), 21, 41, false);
+    CHECK(std::string(c) == "21:41");
+    ss::formatClock(c, sizeof(c), 9, 5, false);
+    CHECK(std::string(c) == "09:05");
+    ss::formatClock(c, sizeof(c), 21, 41, true);
+    CHECK(std::string(c) == "9:41 PM");
+    ss::formatClock(c, sizeof(c), 0, 5, true);
+    CHECK(std::string(c) == "12:05 AM");
+    ss::formatClock(c, sizeof(c), 12, 59, true);
+    CHECK(std::string(c) == "12:59 PM");   // the longest, 8 characters
+    ss::formatClock(c, sizeof(c), 23, 0, true);
+    CHECK(std::string(c) == "11:00 PM");
+    ss::formatClock(c, sizeof(c), 7, 0, true);
+    CHECK(std::string(c) == "7:00 AM");
+    ss::formatClockDigits(c, sizeof(c), 21, 41, true);
+    CHECK(std::string(c) == "9:41");
+    ss::formatClockDigits(c, sizeof(c), 21, 41, false);
+    CHECK(std::string(c) == "21:41");
+    ss::formatHourMark(c, sizeof(c), 14, false);
+    CHECK(std::string(c) == "14:00");
+    ss::formatHourMark(c, sizeof(c), 14, true);
+    CHECK(std::string(c) == "2 PM");
+    ss::formatHourMark(c, sizeof(c), 0, true);
+    CHECK(std::string(c) == "12 AM");
+    ss::formatHourMark(c, sizeof(c), 12, true);
+    CHECK(std::string(c) == "12 PM");
+    ss::formatHourMark(c, sizeof(c), 23, true);
+    CHECK(std::string(c) == "11 PM");
+    ss::formatHourMark(c, sizeof(c), 7, false);
+    CHECK(std::string(c) == "07:00");
+    ss::formatHourShort(c, sizeof(c), 18, false);
+    CHECK(std::string(c) == "18");
+    ss::formatHourShort(c, sizeof(c), 6, false);
+    CHECK(std::string(c) == "06");
+    ss::formatHourShort(c, sizeof(c), 18, true);
+    CHECK(std::string(c) == "6");
+    ss::formatHourShort(c, sizeof(c), 0, true);
+    CHECK(std::string(c) == "12");
+  }
+
   // the look for a Scene setting: Auto is Color by day and Night at night, the
   // three named scenes hold at every hour, an unknown value reads as Auto
   CHECK(ss::lookForScene(0, false) == 2 && ss::lookForScene(0, true) == 1);
@@ -451,21 +496,33 @@ static int runRender(const std::string &dir) {
     static const char *const TABS[4] = {"Display", "Night", "System", "People"};
     SHOT("18_settings_display", ui::drawSettings(TABS, 3, 0, nullptr, disp, 5));
     SHOT("18b_settings_display_four", ui::drawSettings(TABS, 4, 0, nullptr, disp, 5));
-    ui::Row night[3] = {{"Night starts", "23:00", ui::ROW_STEPPER}, {"Night ends", "07:00", ui::ROW_STEPPER}, {"Night dim", "10%", ui::ROW_STEPPER}};
-    SHOT("25_settings_night", ui::drawSettings(TABS, 3, 1, nullptr, night, 3));
+    ui::Row night[4] = {{"Night starts", "23:00", ui::ROW_STEPPER}, {"Night ends", "07:00", ui::ROW_STEPPER}, {"Night dim", "10%", ui::ROW_STEPPER}, {"Clock", "24-hour", ui::ROW_CYCLE}};
+    SHOT("25_settings_night", ui::drawSettings(TABS, 3, 1, nullptr, night, 4));
+    ui::Row night12[4] = {{"Night starts", "11 PM", ui::ROW_STEPPER}, {"Night ends", "7 AM", ui::ROW_STEPPER}, {"Night dim", "10%", ui::ROW_STEPPER}, {"Clock", "12-hour", ui::ROW_CYCLE}};
+    SHOT("25b_settings_night_12h", ui::drawSettings(TABS, 3, 1, nullptr, night12, 4));
+    // every night hour, on either clock, keeps clear of the row's label: the
+    // value ends 6 px before the minus button (ui::drawRows)
+    for (int mode = 0; mode < 2; mode++)
+      for (int hour = 0; hour < 24; hour++) {
+        char val[12];
+        ss::formatHourMark(val, sizeof(val), hour, mode == 1);
+        const ui::MenuLayout ML = ui::menuLayout();
+        const int valueStart = ML.minus(0).x - 6 - gx::textW(F_MED, val);
+        CHECK(ML.row(0).x + 16 + gx::textW(F_MED, "Night starts") + 8 <= valueStart);
+      }
     // the fullest System page: an update, a manual time zone, a paired account
     ui::Row sys[5] = {{"Update", "0.3.3 available", ui::ROW_ACTION},
                       {"Time zone", "Manual", ui::ROW_CYCLE},
                       {"UTC offset", "+5:30", ui::ROW_STEPPER},
                       {"Wi-Fi", "Guest_Network_With_A_Long_Name", ui::ROW_ACTION},
                       {"Disconnect", "", ui::ROW_ACTION}};
-    SHOT("19_settings_system", ui::drawSettings(TABS, 4, 2, "Version 0.4.3", sys, 5));
+    SHOT("19_settings_system", ui::drawSettings(TABS, 4, 2, "Version 0.4.4", sys, 5));
     // the longest value a settings row carries fits beside its label, upright too
     CHECK(gx::textW(F_MED, "Time zone") + 12 + gx::textW(F_MED, "Auto (+14:00)") <= gx::W - 20 - 32);
     ui::Row sysAuto[3] = {{"Time zone", "Auto (+4:00)", ui::ROW_CYCLE},
                           {"Wi-Fi", "Home 5G", ui::ROW_ACTION},
                           {"Disconnect", "", ui::ROW_ACTION}};
-    SHOT("26_settings_system_auto", ui::drawSettings(TABS, 3, 2, "Version 0.4.3", sysAuto, 3));
+    SHOT("26_settings_system_auto", ui::drawSettings(TABS, 3, 2, "Version 0.4.4", sysAuto, 3));
     SHOT("27_update", ui::drawUpdate("0.3.3", "app.sugarsense.io/install"));
     // a newer firmware exists: the quiet dot beside the three
     series(s, 3, 2, 104, 26, false);
@@ -505,6 +562,64 @@ static int runRender(const std::string &dir) {
       SHOT("51_follow_color", ui::drawHome(one, ui::LOOK_COLOR));
       SHOT("52_follow_night", ui::drawHome(one, ui::LOOK_NIGHT));
       ui::Row people[5] = {{"Me", "On", ui::ROW_CYCLE}, {"Anna (daughter)", "On", ui::ROW_CYCLE}, {"Tom", "Off", ui::ROW_CYCLE}, {"Grandpa Joe", "Off", ui::ROW_CYCLE}, {"Sam", "On", ui::ROW_CYCLE}};
+      // the 12-hour clock: the small clock in the top row, the big clock with
+      // its marker, the hours under the graph, a name beside each of them
+      {
+        ui::View c12 = v;
+        c12.clock12 = true;
+        c12.snap = &me;
+        c12.graphHours = 6;
+        SHOT("61_clock12_dark", ui::drawHome(c12, ui::LOOK_DARK));
+        SHOT("62_clock12_color", ui::drawHome(c12, ui::LOOK_COLOR));
+        SHOT("63_clock12_night", ui::drawHome(c12, ui::LOOK_NIGHT));
+        SHOT("64_clock12_split_night", ui::drawSplit(c12, ui::LOOK_NIGHT, four, 4));
+        SHOT("65_clock12_split_dark", ui::drawSplit(c12, ui::LOOK_DARK, two, 2));
+        ui::View f12 = c12;
+        f12.snap = &anna;
+        f12.personLabel = "Anna (daughter)";
+        SHOT("66_clock12_follow_dark", ui::drawHome(f12, ui::LOOK_DARK));
+        SHOT("67_clock12_follow_night", ui::drawHome(f12, ui::LOOK_NIGHT));
+        // a long window on the 12-hour clock: the strip names the half of the day
+        c12.graphHours = 24;
+        series(me, 24, 2, 104, 40, false);
+        SHOT("68_clock12_night_24h", ui::drawHome(c12, ui::LOOK_NIGHT));
+        SHOT("69_clock12_color_24h", ui::drawHome(c12, ui::LOOK_COLOR));
+        c12.graphHours = 12;
+        series(me, 12, 2, 104, 40, false);
+        SHOT("70_clock12_night_12h", ui::drawHome(c12, ui::LOOK_NIGHT));
+        series(me, 3, 2, 104, 26, false);
+        // the split screen's Night header with the link down: no marker there
+        c12.st.wifi = false;
+        SHOT("71_clock12_split_night_nowifi", ui::drawSplit(c12, ui::LOOK_NIGHT, two, 2));
+        c12.st.wifi = true;
+
+        // Every minute of the day, on both clocks: one font for the small
+        // clock, the time clear of the wordmark and of a name's usual room,
+        // the big clock inside the screen and inside the room kept for it.
+        CHECK(&ui::smallClockFont(false) == &F_MED);   // the 24-hour clock is drawn as it always was
+        for (int mode = 0; mode < 2; mode++) {
+          const bool c12mode = mode == 1;
+          const AAFont &f = ui::smallClockFont(c12mode);
+          ui::View m = v;
+          m.clock12 = c12mode;
+          m.tzMin = 0;
+          const int nameEnd = ui::LOCKUP_X + (gx::W > gx::H ? 200 : 150);
+          for (int minute = 0; minute < 24 * 60; minute++) {
+            m.nowMs = (int64_t)minute * 60000;
+            char st[12];
+            ui::clockText(m, st, sizeof(st));
+            const int left = gx::W - ui::SMALL_CLOCK_RIGHT - gx::textW(f, st);
+            CHECK(gx::textW(f, st) <= ui::widestTimeW(f, c12mode));
+            CHECK(ui::LOCKUP_X + ui::lockupW() + 10 <= left);
+            CHECK(nameEnd + 8 <= left);
+            const ui::BigClock big = ui::bigClock(m);
+            CHECK(big.w <= gx::W - 16);
+            CHECK(big.w <= ui::bigClockRoomW(m));
+            // without its marker the group is never wider than the 24-hour clock
+            CHECK(ui::bigClock(m, false).w <= ui::widestDigitsW(F_CLOCK));
+          }
+        }
+      }
       static const char *const TABS4[4] = {"Display", "Night", "System", "People"};
       SHOT("53_settings_people", ui::drawSettings(TABS4, 4, 3, "Up to 4 at once", people, 5));
     }

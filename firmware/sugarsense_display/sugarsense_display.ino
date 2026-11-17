@@ -16,7 +16,7 @@
 // Files: ss_logic.h (the display rules), gx.h (the renderer), ui.h (every
 // screen), hw.h (the board), store.h (settings), net.h (Wi-Fi + the API).
 
-#define FW_VERSION "0.4.3"
+#define FW_VERSION "0.4.4"
 
 #include "ui.h"
 #include "hw.h"
@@ -63,6 +63,7 @@ static ui::View make_view() {
   }
   v.nowMs = clock_now_ms();
   v.tzMin = prefs.tzMin;
+  v.clock12 = prefs.clock12 != 0;
   v.showGraph = prefs.graphHours != 0;
   v.graphHours = (snap.state == ss::STATE_OK && snap.hours) ? snap.hours : (prefs.graphHours ? prefs.graphHours : 3);   // the window the readings cover
   v.st.wifi = net_wifi_up();
@@ -503,7 +504,7 @@ static bool flow_settings() {
   int page = 0;
   hw_backlight(prefs.bright);
   hw_touch_flush();
-  enum { R_BRIGHT, R_SCENE, R_GRAPH, R_ROTATE, R_NSTART, R_NEND, R_NDIM, R_UPDATE, R_ZONE, R_OFFSET, R_SOUND, R_WIFI, R_DISCONNECT, R_PERSON };
+  enum { R_BRIGHT, R_SCENE, R_GRAPH, R_ROTATE, R_NSTART, R_NEND, R_NDIM, R_UPDATE, R_ZONE, R_OFFSET, R_SOUND, R_WIFI, R_DISCONNECT, R_PERSON, R_CLOCK };
   for (;;) {
     // the People page exists while the account follows someone
     const int npages = snap.nfollowed > 0 ? 4 : 3;
@@ -535,13 +536,20 @@ static bool flow_settings() {
     } else if (page == 1) {
       ids[n] = R_NSTART;
       rows[n] = {"Night starts", "", ui::ROW_STEPPER};
-      snprintf(rows[n++].value, sizeof(rows[0].value), "%02d:00", prefs.nightStart);
+      ss::formatHourMark(rows[n++].value, sizeof(rows[0].value), prefs.nightStart, prefs.clock12 != 0);
       ids[n] = R_NEND;
       rows[n] = {"Night ends", "", ui::ROW_STEPPER};
-      snprintf(rows[n++].value, sizeof(rows[0].value), "%02d:00", prefs.nightEnd);
+      ss::formatHourMark(rows[n++].value, sizeof(rows[0].value), prefs.nightEnd, prefs.clock12 != 0);
       ids[n] = R_NDIM;
       rows[n] = {"Night dim", "", ui::ROW_STEPPER};
       snprintf(rows[n++].value, sizeof(rows[0].value), "%d%%", prefs.nightBright);
+      // How every time on the display is written: the clock in each scene, the
+      // hours under the graph and the two night hours above. It lives on this
+      // page because the change shows at once in those two rows, and because
+      // the System page can already be full on the wide screen.
+      ids[n] = R_CLOCK;
+      rows[n] = {"Clock", "", ui::ROW_CYCLE};
+      snprintf(rows[n++].value, sizeof(rows[0].value), "%s", prefs.clock12 ? "12-hour" : "24-hour");
     } else if (page == 3) {
       // whose glucose the screen shows: the account's own and the people it
       // follows, up to four at once; nothing chosen yet reads as the default
@@ -660,6 +668,7 @@ static bool flow_settings() {
         break;
       case R_OFFSET: prefs.tzMin = (int16_t)constrain(prefs.tzMin + dir * 30, -720, 840); break;
       case R_SOUND: prefs.sound = !prefs.sound; break;
+      case R_CLOCK: prefs.clock12 = !prefs.clock12; break;
       case R_PERSON:
         // the last chosen person stays, a fifth is refused (the rule in ss_logic.h)
         if (who[row] && ss::selectionToggle(prefs.people, sizeof(prefs.people), who[row])) {
