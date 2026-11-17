@@ -28,6 +28,8 @@ struct Prefs {
   uint8_t tzAuto;        // 1 = the offset follows the phone that paired the display (the server sends it)
   char people[160];      // whose glucose the screen shows: "me" and / or followed ids, comma-separated ("" = the default)
   uint8_t clock12;       // 1 = the clock reads 9:41 PM, 0 = 21:41 (the default)
+  uint8_t showTir;       // Settings > Extras: today's Time in Range in the top left (off by default)
+  uint8_t showSensor;    // Settings > Extras: the sensor's days left in the top left (off by default)
 };
 
 static Prefs prefs;
@@ -51,6 +53,8 @@ static void store_load() {
   prefs.tzAuto = store_nvs.getUChar("tzauto", 1);
   store_nvs.getString("people", prefs.people, sizeof(prefs.people));
   prefs.clock12 = store_nvs.getUChar("clock12", 0) ? 1 : 0;
+  prefs.showTir = store_nvs.getUChar("xtir", 0) ? 1 : 0;
+  prefs.showSensor = store_nvs.getUChar("xsensor", 0) ? 1 : 0;
   if (prefs.scene > SCENE_COLOR) prefs.scene = SCENE_AUTO;
   if (prefs.graphHours != 0 && prefs.graphHours != 3 && prefs.graphHours != 6 && prefs.graphHours != 12 && prefs.graphHours != 24) prefs.graphHours = 3;
 }
@@ -71,6 +75,8 @@ static void store_save() {
   store_nvs.putUChar("tzauto", prefs.tzAuto);
   store_nvs.putString("people", prefs.people);
   store_nvs.putUChar("clock12", prefs.clock12);
+  store_nvs.putUChar("xtir", prefs.showTir);
+  store_nvs.putUChar("xsensor", prefs.showSensor);
 }
 
 #endif

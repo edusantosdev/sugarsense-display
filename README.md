@@ -66,7 +66,7 @@ time servers `pool.ntp.org` and `time.google.com` for the clock; nothing else.
 ## Using it
 
 - **The three dots** (top right) open Settings, short pages named as tabs
-  along the top (tap any; a fourth, People, while the account follows someone):
+  along the top (tap any; a fifth, People, while the account follows someone):
   - **Display:** brightness, the scene, the graph's window (3, 6, 12 or 24
     hours, or Off), screen rotation, sound (with the small speaker plugged into
     the board's speaker socket: a soft tick on a tap, a chime when Wi-Fi joins
@@ -75,6 +75,8 @@ time servers `pool.ntp.org` and `time.google.com` for the clock; nothing else.
     **Clock**: 24-hour (21:41, the default) or 12-hour (9:41 PM). It changes
     every time on the display: the clock in each scene, the hours under the
     graph and the two night hours on this page.
+  - **Extras:** two optional numbers, both off until you turn them on (see
+    below).
   - **System:** the time zone (Auto, or Manual with an offset you set), Wi-Fi,
     disconnect, and an Update row when a newer version is out.
 - The home screen itself is for looking: a touch anywhere on it only brings the
@@ -87,7 +89,24 @@ time servers `pool.ntp.org` and `time.google.com` for the clock; nothing else.
 - **Graph: Off** is for numbers only: the graph goes, the number grows and
   stands in the middle of the screen with the change and the age under it. It
   works in every scene.
-- **People** (a fourth page, there when the account follows someone in the
+- **Extras** adds one quiet line in the top left corner, where the words
+  "Sugar Sense" stand. Both parts are off by default, and with both off the
+  screen is exactly the number, the arrow and the graph:
+  - **Time in range today:** the share of today's readings inside your own
+    low and high limits, since midnight on the display's clock ("82% in
+    range"). The same number the app's Home screen shows for today. It
+    appears once the day has three readings.
+  - **Sensor days left:** a countdown to the end of your sensor ("Sensor 5d
+    left", hours in the last day, "Sensor ended" for a week after). It uses
+    the sensor the app knows: a Libre sensor is picked up by itself; for
+    Dexcom, mark the sensor's start once in the Sugar Sense app (Settings,
+    the page of your glucose source). Until the app knows the sensor, this
+    part stays empty and the page says "No sensor date".
+
+  On the upright screen the line is shorter ("82% · 5d left"); in the Night
+  scene the two parts sit beside the clock. The line shows for your own
+  glucose shown alone, not on the split screen and not for a followed person.
+- **People** (a fifth page, there when the account follows someone in the
   Care Circle): your own glucose and every person you follow, each On or Off.
   One person fills the screen as usual, with their name in the corner; two to
   four split it into tiles, each with the name, the number in its zone color,
@@ -179,7 +198,7 @@ The display is a read-only client of `https://app.sugarsense.io/api/v1`:
 |---|---|
 | `POST /displayPairStart` | no session yet: answers a 6-character code, a poll secret and the address of the pairing page |
 | `POST /displayPairPoll` | the poll secret: pending until you tap Connect, then ONE session token |
-| `POST /getDisplaySnapshot` | the session token: the latest reading, your limits and unit, the graph's points, the clock offset, the newest firmware version; with `people` (the followed ids the screen shows) also each of their readings, and always `followed`, everyone the account follows |
+| `POST /getDisplaySnapshot` | the session token: the latest reading, your limits and unit, the graph's points, the clock offset, the newest firmware version; with `people` (the followed ids the screen shows) also each of their readings, and always `followed`, everyone the account follows; with `tir: true` also `tirToday` (a whole percent) and with `sensor: true` also `sensor` (when it ends), asked for only while those two settings are on |
 | `POST /displayUnpair` | the session token: ends the session ("Disconnect") |
 
 A session token reads the glucose snapshot of the one account that confirmed

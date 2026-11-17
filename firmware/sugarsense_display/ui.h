@@ -126,6 +126,10 @@ struct Snapshot {
   bool hasOffset = false;         // the server knows this display's time zone
   int offsetMin = 0;              // minutes east of UTC right now, when it does
   int pullS = 60;                 // how often the server wants to be asked
+  int tir = -1;                   // today's Time in Range, whole percent (-1 = not asked for, or not known yet)
+  int64_t sensorEndsAt = 0;       // when the sensor ends (0 = not asked for, or the app does not know the sensor)
+  int64_t sensorGraceEndsAt = 0;  // and the end of its grace, for a model that has one
+  bool sensorAsked = false;       // this answer was asked for the sensor (so "none" means the app has no date)
   Person people[SS_MAX_TILES];    // the followed people the display asked for, in its own order
   int npeople = 0;
   Followed followed[SS_MAX_FOLLOWED];   // everyone this account follows (the People page lists them)
@@ -147,6 +151,10 @@ struct View {
   int graphHours;
   bool showGraph = true;   // false = numbers only: no graph, a larger number in the middle
   const char *personLabel = nullptr;   // the single view of a followed person: their name in place of the wordmark
+  // Settings > Extras (both off by default): the two optional parts of the
+  // top-left line, set only for the account's own reading shown alone.
+  int tir = -1;                                       // today's Time in Range, percent; -1 = not shown
+  ss::SensorLeft sensor = {ss::SENSOR_NONE, 0};       // what is left of the sensor; NONE = not shown
   // The "one more step" screen (an account with no glucose source yet): the
   // QR code of the page where a phone gets the app, and that page as text.
   const uint8_t *qr = nullptr;
@@ -292,6 +300,64 @@ static void drawSmallClock(const View &v, uint16_t ink, int alpha) {
   char t[12];
   clockText(v, t, sizeof(t));
   gx::textR(smallClockFont(v.clock12), W - SMALL_CLOCK_RIGHT, 31, t, ink, alpha);
+}
+
+// ---- the optional line (Settings > Extras) ------------------------------------
+// Today's Time in Range and what is left of the sensor, in the font of the
+// clock across the row (the owner's look at his board, 2026-11-18: the two
+// ends of the top row read as one line), where the wordmark's two words
+// stand; the drop mark stays. Never beside a
+// followed person's name, and nothing at all while both settings are off:
+// the screen is then drawn exactly as before.
+static bool hasExtras(const View &v) {
+  return !v.personLabel && ((v.tir >= 0 && v.tir <= 100) || v.sensor.kind != ss::SENSOR_NONE);
+}
+
+// The line for `room`, and the font to draw it with. The size comes first:
+// the longest form that fits in the wanted font (the clock's), a briefer one
+// before a smaller font. Only where even the briefest does not fit (the
+// upright screen with a three-digit percent beside a two-digit count) the
+// small font takes over, then the tiny one; an ellipsis is the last resort.
+static const AAFont &extrasFit(const View &v, const AAFont &want, int room, char *out, size_t n) {
+  const AAFont *fonts[3] = {&want, &F_SMALL, &F_TINY};
+  for (int fi = 0; fi < 3; fi++) {
+    if (fi > 0 && fonts[fi] == &want) continue;
+    for (int form = 0; form < ss::EXTRAS_FORMS; form++) {
+      ss::extrasLine(out, n, v.tir, v.sensor, form, " " CH_DOT " ");
+      if (gx::textW(*fonts[fi], out) <= room) return *fonts[fi];
+    }
+  }
+  char cut[48];
+  fitText(F_TINY, out, room, cut, sizeof(cut));
+  snprintf(out, n, "%s", cut);
+  return F_TINY;
+}
+
+// Where a font's line sits in the top row, so each size centers on the clock's.
+static int extrasBase(const AAFont &f) { return &f == &F_MED ? 31 : (&f == &F_SMALL ? 30 : 29); }
+
+// The room between `x` and the small clock (its widest time of the mode, so
+// the line reads the same at every minute).
+static int extrasRoom(const View &v, int x) {
+  const int right = v.st.timeSynced ? W - SMALL_CLOCK_RIGHT - widestTimeW(smallClockFont(v.clock12), v.clock12) : W - 52;
+  return right - 10 - x;
+}
+
+// The Dark and Color scenes: the drop mark, then the line.
+static void drawExtras(const View &v, uint16_t mark, uint16_t ink, int markAlpha, int alpha) {
+  const int x = gx::text(F_MARK, LOCKUP_X, 31 + 5, "M", mark, markAlpha) + 7;
+  char line[48];
+  const AAFont &f = extrasFit(v, smallClockFont(v.clock12), extrasRoom(v, x), line, sizeof(line));
+  gx::text(f, x, extrasBase(f), line, ink, alpha);
+}
+
+// One part alone, in full where it fits `room`, else brief.
+static void extrasPart(const View &v, bool sensor, int room, char *out, size_t n) {
+  for (int brief = 0; brief < 2; brief++) {
+    if (sensor) ss::sensorText(out, n, v.sensor, brief);
+    else ss::tirText(out, n, v.tir, brief == 1);
+    if (gx::textW(F_SMALL, out) <= room) return;
+  }
 }
 
 // The big clock (the Night scene). Its font carries digits only, so on a
@@ -653,6 +719,7 @@ static void drawDay(const View &v) {
 
   if (!v.st.wifi || !v.st.apiOk) drawLinkWarning(v, ink, 255);
   else if (v.personLabel) drawPersonLabel(v, ink, 236);
+  else if (hasExtras(v)) drawExtras(v, ink, ink, 236, 236);
   else drawLockup(14, 31, ink, ink, ink, 236);
   drawDots(ink, 190);
   drawSmallClock(v, ink, 190);
@@ -667,6 +734,10 @@ static void drawDay(const View &v) {
   }
   if (v.showGraph) drawTrend(L.trend, v, ink, 40, h.fresh);
 }
+
+// The room left of the Night scene's big clock for the optional line's two
+// stacked parts (the clock's widest time of the mode, 8 px clear of it).
+static int nightExtrasRoom(const View &v) { return (W - bigClockRoomW(v)) / 2 - 14 - 8; }
 
 // The Night scene: black, the clock at about half the number, everything in
 // the zone color, a soft glow behind a number that is out of range.
@@ -687,6 +758,28 @@ static void drawNight(const View &v) {
       drawPersonLabel(v, C_DIM, 255, (W - bigClockRoomW(v)) / 2 - 14 - 12, &F_SMALL);
     } else {
       drawPersonLabel(v, C_DIM, 255);
+    }
+  } else if (hasExtras(v)) {
+    // Quiet, like everything at night. Where the big clock reaches the top
+    // row (the wide screen) the two parts stand one over the other in the
+    // room on its left; else they share one line above the clock.
+    const int clockTop = L.clockBase - 44;
+    if (v.st.timeSynced && clockTop < 40) {
+      const int room = nightExtrasRoom(v);
+      const bool two = v.tir >= 0 && v.sensor.kind != ss::SENSOR_NONE;
+      char part[24];
+      if (v.tir >= 0) {
+        extrasPart(v, false, room, part, sizeof(part));
+        gx::text(F_SMALL, 14, two ? 26 : 31, part, C_DIM, 170);
+      }
+      if (v.sensor.kind != ss::SENSOR_NONE) {
+        extrasPart(v, true, room, part, sizeof(part));
+        gx::text(F_SMALL, 14, two ? 48 : 31, part, C_DIM, 170);
+      }
+    } else {
+      char line[48];
+      const AAFont &f = extrasFit(v, F_MED, W - 52 - 10 - 14, line, sizeof(line));
+      gx::text(f, 14, extrasBase(f), line, C_DIM, 170);
     }
   }
   drawDots(C_DIM, 150);
@@ -901,6 +994,7 @@ static void drawDark(const View &v) {
 
   if (!v.st.wifi || !v.st.apiOk) drawLinkWarning(v, C_TEXT, 255);
   else if (v.personLabel) drawPersonLabel(v, C_TEXT, 230);
+  else if (hasExtras(v)) drawExtras(v, C_BRAND, C_TEXT, 255, 215);
   else drawLockup(14, 31, C_BRAND, C_LOGO_SUGAR, C_BRAND);
   drawDots(C_DIM, 255);
   drawSmallClock(v, C_TEXT, 210);
@@ -1260,13 +1354,19 @@ static void drawMenu(const char *title, const char *sub, const Row *rows, int n,
   if (rightLabel) drawButton(L.right(), rightLabel, false);
 }
 
-// The tabs' font: the medium one when every page name fits its tab, else the
-// small one (four tabs on the upright screen).
+// The tabs' font: the medium one when every page name fits its tab with
+// room to spare, else the small one (four tabs on the upright screen, five on
+// the wide one), else the tiny one (five tabs on the upright screen: a
+// follower's display, which has the People page too).
 static const AAFont &tabFont(const char *const *tabs, int n) {
   MenuLayout L = menuLayout();
-  for (int i = 0; i < n; i++)
-    if (gx::textW(F_MED, tabs[i]) > L.tab(i, n).w - 14) return F_SMALL;
-  return F_MED;
+  bool med = true, small = true;
+  for (int i = 0; i < n; i++) {
+    const int w = L.tab(i, n).w;
+    if (gx::textW(F_MED, tabs[i]) > w - 20) med = false;     // the medium font wants air around it
+    if (gx::textW(F_SMALL, tabs[i]) > w - 14) small = false;
+  }
+  return med ? F_MED : (small ? F_SMALL : F_TINY);
 }
 
 // Settings: every page named as a tab on top, the current one filled in the
@@ -1280,7 +1380,7 @@ static void drawSettings(const char *const *tabs, int nt, int cur, const char *n
   const int th = L.top - 16;
   gx::rrect(10, 8, W - 20, th, th / 2, C_CARD);
   const AAFont &f = tabFont(tabs, nt);
-  const int lift = &f == &F_MED ? 8 : 6;
+  const int lift = &f == &F_MED ? 8 : (&f == &F_SMALL ? 6 : 4);
   for (int i = 0; i < nt; i++) {
     Rect r = L.tab(i, nt);
     if (i == cur) gx::rrect(r.x + 3, r.y + 3, r.w - 6, r.h - 6, (r.h - 6) / 2, C_BRAND);

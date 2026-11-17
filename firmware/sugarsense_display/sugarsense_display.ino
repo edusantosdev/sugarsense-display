@@ -16,7 +16,7 @@
 // Files: ss_logic.h (the display rules), gx.h (the renderer), ui.h (every
 // screen), hw.h (the board), store.h (settings), net.h (Wi-Fi + the API).
 
-#define FW_VERSION "0.4.4"
+#define FW_VERSION "0.5.0"
 
 #include "ui.h"
 #include "hw.h"
@@ -85,6 +85,10 @@ static char ask_people[160] = "";   // the followed ids the next pull asks for
 static bool ask_points = false;
 
 static bool own_has_source() { return snap.state == ss::STATE_OK; }
+
+// The screen shows the account's own reading alone (not the split screen, not
+// a followed person): the one view that carries the optional top-left line.
+static bool own_alone() { return !(ntiles > 1 || (ntiles == 1 && !tiles[0].self)); }
 
 static int followed_index(const char *id) {
   for (int i = 0; i < snap.nfollowed; i++)
@@ -208,6 +212,9 @@ static struct {
   int hours;
   char people[160];   // the followed ids the screen shows
   bool points;        // the whole window for the one followed person shown alone
+  bool tir;           // Settings > Extras: today's Time in Range
+  bool sensor;        // Settings > Extras: the sensor's days left
+  int tzMin;          // the clock offset the display shows ("today" is its day)
 } net_ask;
 static struct {
   ui::Snapshot snap;
@@ -216,6 +223,17 @@ static struct {
 } net_answer;
 static volatile uint32_t net_answer_seq = 0;
 static uint32_t net_seen_seq = 0;
+
+// A tap, or an answer from the server, whichever comes first (true = a tap):
+// for a page whose words depend on the answer that is on its way.
+static bool wait_tap_or_answer() {
+  while (!hw_tap()) {
+    service_info();
+    if (net_answer_seq != net_seen_seq) return false;
+    delay(5);
+  }
+  return true;
+}
 
 static void net_task(void *) {
   static ui::Snapshot fresh;
@@ -227,18 +245,22 @@ static void net_task(void *) {
     char token[48];
     int hours;
     static char people[160];
-    bool points;
+    bool points, tir, sensor;
+    int tzMin;
     xSemaphoreTake(net_lock, portMAX_DELAY);
     memcpy(token, net_ask.token, sizeof(token));
     hours = net_ask.hours;
     memcpy(people, net_ask.people, sizeof(people));
     points = net_ask.points;
+    tir = net_ask.tir;
+    sensor = net_ask.sensor;
+    tzMin = net_ask.tzMin;
     xSemaphoreGive(net_lock);
     if (!token[0]) continue;
     net_kick = false;
     net_busy = true;
     const uint32_t started = millis();
-    const int rc = api_snapshot(token, hours, people, points, fresh);
+    const int rc = api_snapshot(token, hours, people, points, tir, sensor, tzMin, fresh);
     const uint32_t took = millis() - started;
     trace(TR_PULL, (int)took, rc);
     xSemaphoreTake(net_lock, portMAX_DELAY);
@@ -261,6 +283,11 @@ static void net_ask_for(bool now) {
   net_ask.hours = prefs.graphHours ? prefs.graphHours : 3;   // without a graph the short window still carries the change
   snprintf(net_ask.people, sizeof(net_ask.people), "%s", ask_people);
   net_ask.points = ask_points;
+  // the two optional parts are asked for only while the screen can show
+  // them: the account's own reading, alone
+  net_ask.tir = prefs.showTir != 0 && own_alone();
+  net_ask.sensor = prefs.showSensor != 0 && own_alone();
+  net_ask.tzMin = prefs.tzMin;
   xSemaphoreGive(net_lock);
   if (!now) return;
   net_kick = true;
@@ -496,18 +523,35 @@ static bool confirm_disconnect() {
   }
 }
 
-// Three or four short pages, named as tabs on top. Returns true when the
+// The note under the Extras page: where the line is, or why there is none.
+// "No sensor date" covers every reason the sensor part is empty (the app
+// has not been told this sensor's start, or it ended more than a week ago,
+// or the server sent no date): the display cannot tell them apart, so it
+// says only what it knows.
+static const char *extras_note() {
+  if (!prefs.showTir && !prefs.showSensor) return "Off by default";
+  if (!own_alone()) return "Own reading only";
+  if (prefs.showSensor && snap.state == ss::STATE_OK && snap.sensorAsked && clock_synced() &&
+      ss::sensorLeft(clock_now_ms(), snap.sensorEndsAt, snap.sensorGraceEndsAt).kind == ss::SENSOR_NONE)
+    return "No sensor date";
+  return "Shown top left";
+}
+
+// Four or five short pages, named as tabs on top. Returns true when the
 // person disconnected the account.
 static bool flow_settings() {
   static const char *SCENES[4] = {"Auto", "Dark", "Night", "Color"};
-  static const char *PAGES[4] = {"Display", "Night", "System", "People"};
+  // the pages in the order of their tabs; People exists while the account follows someone
+  enum { P_DISPLAY, P_NIGHT, P_EXTRAS, P_SYSTEM, P_PEOPLE };
+  static const char *PAGES[5] = {"Display", "Night", "Extras", "System", "People"};
   int page = 0;
+  const int tzAtOpen = prefs.tzMin;   // a changed clock offset moves "today" for Time in Range
   hw_backlight(prefs.bright);
   hw_touch_flush();
-  enum { R_BRIGHT, R_SCENE, R_GRAPH, R_ROTATE, R_NSTART, R_NEND, R_NDIM, R_UPDATE, R_ZONE, R_OFFSET, R_SOUND, R_WIFI, R_DISCONNECT, R_PERSON, R_CLOCK };
+  enum { R_BRIGHT, R_SCENE, R_GRAPH, R_ROTATE, R_NSTART, R_NEND, R_NDIM, R_UPDATE, R_ZONE, R_OFFSET, R_SOUND, R_WIFI, R_DISCONNECT, R_PERSON, R_CLOCK, R_TIR, R_SENSOR };
   for (;;) {
     // the People page exists while the account follows someone
-    const int npages = snap.nfollowed > 0 ? 4 : 3;
+    const int npages = snap.nfollowed > 0 ? 5 : 4;
     if (page >= npages) page = 0;
     ui::Row rows[6];
     int ids[6];               // which setting each row on the screen is
@@ -516,7 +560,7 @@ static bool flow_settings() {
     char offset[12];
     const int tz = prefs.tzMin < 0 ? -prefs.tzMin : prefs.tzMin;
     snprintf(offset, sizeof(offset), "%s%d:%02d", prefs.tzMin < 0 ? CH_MINUS : "+", tz / 60, tz % 60);
-    if (page == 0) {
+    if (page == P_DISPLAY) {
       ids[n] = R_BRIGHT;
       rows[n] = {"Brightness", "", ui::ROW_STEPPER};
       snprintf(rows[n++].value, sizeof(rows[0].value), "%d%%", prefs.bright);
@@ -533,7 +577,7 @@ static bool flow_settings() {
       ids[n] = R_SOUND;
       rows[n] = {"Sound", "", ui::ROW_CYCLE};
       snprintf(rows[n++].value, sizeof(rows[0].value), "%s", prefs.sound ? "On" : "Off");
-    } else if (page == 1) {
+    } else if (page == P_NIGHT) {
       ids[n] = R_NSTART;
       rows[n] = {"Night starts", "", ui::ROW_STEPPER};
       ss::formatHourMark(rows[n++].value, sizeof(rows[0].value), prefs.nightStart, prefs.clock12 != 0);
@@ -550,7 +594,17 @@ static bool flow_settings() {
       ids[n] = R_CLOCK;
       rows[n] = {"Clock", "", ui::ROW_CYCLE};
       snprintf(rows[n++].value, sizeof(rows[0].value), "%s", prefs.clock12 ? "12-hour" : "24-hour");
-    } else if (page == 3) {
+    } else if (page == P_EXTRAS) {
+      // Two optional parts of one quiet line in the top left, where the
+      // wordmark's words stand. Both off by default: the screen keeps to the
+      // number, the arrow and the graph until the person asks for more.
+      ids[n] = R_TIR;
+      rows[n] = {"Time in range today", "", ui::ROW_CYCLE};
+      snprintf(rows[n++].value, sizeof(rows[0].value), "%s", prefs.showTir ? "On" : "Off");
+      ids[n] = R_SENSOR;
+      rows[n] = {"Sensor days left", "", ui::ROW_CYCLE};
+      snprintf(rows[n++].value, sizeof(rows[0].value), "%s", prefs.showSensor ? "On" : "Off");
+    } else if (page == P_PEOPLE) {
       // whose glucose the screen shows: the account's own and the people it
       // follows, up to four at once; nothing chosen yet reads as the default
       if (!prefs.people[0]) {
@@ -601,13 +655,23 @@ static bool flow_settings() {
       }
     }
     const uint32_t t0 = millis();
-    ui::drawSettings(PAGES, npages, page, page == 2 ? "Version " FW_VERSION : (page == 3 ? "Up to 4 at once" : nullptr), rows, n);
+    const char *note = page == P_SYSTEM ? "Version " FW_VERSION : (page == P_PEOPLE ? "Up to 4 at once" : (page == P_EXTRAS ? extras_note() : nullptr));
+    ui::drawSettings(PAGES, npages, page, note, rows, n);
     const uint32_t t1 = millis();
     hw_present();
     last_draw_ms = t1 - t0;
     last_flush_ms = millis() - t1;
     trace(TR_FRAME, (int)last_draw_ms, (int)last_flush_ms);
-    wait_tap();
+    if (page == P_EXTRAS) {
+      // the note says what the server answered: when the answer to a row just
+      // turned on comes in, take it over and draw the page again
+      if (!wait_tap_or_answer()) {
+        net_collect();
+        continue;
+      }
+    } else {
+      wait_tap();
+    }
     trace(TR_TAP, tap_x, tap_y);
     tick();
     ui::MenuLayout L = ui::menuLayout();
@@ -615,6 +679,12 @@ static bool flow_settings() {
       const uint32_t s0 = millis();
       store_save();
       trace(TR_SAVE, (int)(millis() - s0), 0);
+      if (prefs.tzMin != tzAtOpen) {
+        // the day on the display's clock moved: the percent on hand is of the
+        // old day, so it goes, and the new day's is asked for at once
+        snap.tir = -1;
+        net_ask_for(prefs.showTir != 0);
+      }
       return false;
     }
     int tabbed = -1;
@@ -669,6 +739,16 @@ static bool flow_settings() {
       case R_OFFSET: prefs.tzMin = (int16_t)constrain(prefs.tzMin + dir * 30, -720, 840); break;
       case R_SOUND: prefs.sound = !prefs.sound; break;
       case R_CLOCK: prefs.clock12 = !prefs.clock12; break;
+      case R_TIR:
+        prefs.showTir = !prefs.showTir;
+        net_ask_for(true);   // the number is on its way before Settings closes
+        dirty = true;
+        break;
+      case R_SENSOR:
+        prefs.showSensor = !prefs.showSensor;
+        net_ask_for(true);
+        dirty = true;
+        break;
       case R_PERSON:
         // the last chosen person stays, a fifth is refused (the rule in ss_logic.h)
         if (who[row] && ss::selectionToggle(prefs.people, sizeof(prefs.people), who[row])) {
@@ -830,6 +910,12 @@ static void render_home() {
       ui::drawSplit(v, look, tiles, 1);
     }
   } else {
+    // the account's own reading alone: the two optional parts of the top-left
+    // line, each only while its setting is on and the server sent it
+    if (snap.state == ss::STATE_OK) {
+      if (prefs.showTir) v.tir = snap.tir;
+      if (prefs.showSensor) v.sensor = ss::sensorLeft(v.nowMs, snap.sensorEndsAt, snap.sensorGraceEndsAt);
+    }
     ui::drawHome(v, look);
   }
   ui::updateHint = false;

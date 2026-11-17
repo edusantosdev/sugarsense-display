@@ -296,8 +296,98 @@ static int runLogic() {
     }
     CHECK(16 + gx::textW(F_SMALL, "Version 0.4.33") <= TL.right().x - 8);
     CHECK(16 + gx::textW(F_SMALL, "Up to 4 at once") <= TL.right().x - 8);
+    // the Extras page: its three notes clear the Done button, and its longest
+    // label keeps clear of its value, on both screens
+    for (const char *note : {"Off by default", "Shown top left", "No sensor date", "Own reading only"}) CHECK(16 + gx::textW(F_SMALL, note) <= TL.right().x - 8);
+    CHECK(gx::textW(F_MED, "Time in range today") + 12 + gx::textW(F_MED, "Off") <= gx::W - 20 - 32);
+    // five tabs (a follower's display): every page name fits its tab in the font the rule picks
+    static const char *const FIVE[5] = {"Display", "Night", "Extras", "System", "People"};
+    for (int n = 4; n <= 5; n++) {
+      const AAFont &tf = ui::tabFont(FIVE, n);
+      for (int i = 0; i < n; i++) CHECK(gx::textW(tf, FIVE[i]) <= TL.tab(i, n).w - 14);
+      // four tabs (every display now) never fall to the tiny font, on either screen
+      if (n == 4) CHECK(&tf != &F_TINY);
+    }
   }
   gx::setRotation(0);
+  // the sensor's countdown: the app's phases (sensor age), by the display's clock
+  {
+    const int64_t H = ss::HOUR_MS, D = ss::DAY_MS, end = now + 5 * D + 12 * H;
+    auto left = [&](int64_t at, int64_t e, int64_t g) { return ss::sensorLeft(at, e, g); };
+    CHECK(left(now, 0, 0).kind == ss::SENSOR_NONE);                                   // not told
+    CHECK(left(now, end, 0).kind == ss::SENSOR_DAYS && left(now, end, 0).n == 5);       // whole days left, rounded down
+    CHECK(left(now, now + 14 * D, 0).n == 14);
+    CHECK(left(now, now + D + 1, 0).kind == ss::SENSOR_DAYS && left(now, now + D + 1, 0).n == 1);
+    CHECK(left(now, now + D, 0).kind == ss::SENSOR_HOURS && left(now, now + D, 0).n == 24);   // the last day opens at exactly 24 h
+    CHECK(left(now, now + 6 * H + 1, 0).n == 7);                                       // hours round up
+    CHECK(left(now, now + 6 * H, 0).n == 6);
+    CHECK(left(now, now + 1, 0).kind == ss::SENSOR_HOURS && left(now, now + 1, 0).n == 1);   // never "0h left"
+    CHECK(left(now, now, 0).kind == ss::SENSOR_ENDED);                                 // the end itself is the end
+    CHECK(left(now, now, now + 12 * H).kind == ss::SENSOR_GRACE && left(now, now, now + 12 * H).n == 12);
+    CHECK(left(now, now - 11 * H - 30 * 60000, now + 30 * 60000).n == 1);
+    CHECK(left(now, now - 12 * H, now).kind == ss::SENSOR_ENDED);                      // the grace is over
+    CHECK(left(now, now - 7 * D + 1, 0).kind == ss::SENSOR_ENDED);                     // "ended" for a week
+    CHECK(left(now, now - 7 * D, 0).kind == ss::SENSOR_NONE);                          // then nothing
+    CHECK(left(now, now + 401 * D, 0).kind == ss::SENSOR_NONE);                        // not a sensor's end
+    CHECK(left(0, end, 0).kind == ss::SENSOR_NONE);                                    // no clock yet
+    char t[32];
+    ss::sensorText(t, sizeof(t), {ss::SENSOR_DAYS, 5}, 0);
+    CHECK(std::string(t) == "Sensor 5d left");
+    ss::sensorText(t, sizeof(t), {ss::SENSOR_DAYS, 5}, 1);
+    CHECK(std::string(t) == "5d left");
+    ss::sensorText(t, sizeof(t), {ss::SENSOR_DAYS, 15}, 2);
+    CHECK(std::string(t) == "15d");
+    ss::sensorText(t, sizeof(t), {ss::SENSOR_HOURS, 7}, 0);
+    CHECK(std::string(t) == "Sensor 7h left");
+    ss::sensorText(t, sizeof(t), {ss::SENSOR_HOURS, 24}, 2);
+    CHECK(std::string(t) == "24h");
+    ss::sensorText(t, sizeof(t), {ss::SENSOR_GRACE, 8}, 0);
+    CHECK(std::string(t) == "Sensor grace 8h");
+    ss::sensorText(t, sizeof(t), {ss::SENSOR_GRACE, 8}, 1);
+    CHECK(std::string(t) == "grace 8h");
+    ss::sensorText(t, sizeof(t), {ss::SENSOR_GRACE, 8}, 2);
+    CHECK(std::string(t) == "grace 8h");                                               // the grace keeps its word
+    ss::sensorText(t, sizeof(t), {ss::SENSOR_ENDED, 0}, 0);
+    CHECK(std::string(t) == "Sensor ended");
+    ss::sensorText(t, sizeof(t), {ss::SENSOR_ENDED, 0}, 1);
+    CHECK(std::string(t) == "ended");
+    ss::sensorText(t, sizeof(t), {ss::SENSOR_NONE, 0}, 0);
+    CHECK(std::string(t).empty());
+    ss::tirText(t, sizeof(t), 82, false);
+    CHECK(std::string(t) == "82% in range");
+    ss::tirText(t, sizeof(t), 100, true);
+    CHECK(std::string(t) == "100%");
+    ss::tirText(t, sizeof(t), 0, false);
+    CHECK(std::string(t) == "0% in range");                                            // a real zero is a number
+    ss::tirText(t, sizeof(t), -1, false);
+    CHECK(std::string(t).empty());
+    ss::tirText(t, sizeof(t), 101, false);
+    CHECK(std::string(t).empty());
+    // the one line, in its four lengths
+    char l[48];
+    const ss::SensorLeft five = {ss::SENSOR_DAYS, 5}, none = {ss::SENSOR_NONE, 0};
+    ss::extrasLine(l, sizeof(l), 82, five, 0, " | ");
+    CHECK(std::string(l) == "82% in range | Sensor 5d left");
+    ss::extrasLine(l, sizeof(l), 82, five, 1, " | ");
+    CHECK(std::string(l) == "82% | Sensor 5d left");
+    ss::extrasLine(l, sizeof(l), 82, five, 2, " | ");
+    CHECK(std::string(l) == "82% | 5d left");
+    ss::extrasLine(l, sizeof(l), 100, {ss::SENSOR_DAYS, 12}, 3, " | ");
+    CHECK(std::string(l) == "100% | 12d");
+    ss::extrasLine(l, sizeof(l), 100, {ss::SENSOR_ENDED, 0}, 2, " | ");
+    CHECK(std::string(l) == "100% | ended");
+    // a part that stands alone keeps its full words one step longer
+    ss::extrasLine(l, sizeof(l), 82, none, 1, " | ");
+    CHECK(std::string(l) == "82% in range");
+    ss::extrasLine(l, sizeof(l), 82, none, 2, " | ");
+    CHECK(std::string(l) == "82%");
+    ss::extrasLine(l, sizeof(l), -1, five, 1, " | ");
+    CHECK(std::string(l) == "Sensor 5d left");
+    ss::extrasLine(l, sizeof(l), -1, five, 2, " | ");
+    CHECK(std::string(l) == "5d left");
+    ss::extrasLine(l, sizeof(l), -1, none, 0, " | ");
+    CHECK(std::string(l).empty());
+  }
   // whose glucose the screen shows: a list of ids, at most four, never empty once chosen
   {
     char sel[64] = "";
@@ -491,15 +581,122 @@ static int runRender(const std::string &dir) {
     v.st.apiOk = true;
     v.snap = &s;
 
+    // Settings > Extras: the optional line in the top left, in the three
+    // scenes, in its other states, on the 12-hour clock, without a graph
+    {
+      ui::View x = v;
+      series(s, 3, 2, 104, 26, false);
+      x.tir = 82;
+      x.sensor = {ss::SENSOR_DAYS, 5};
+      SHOT("72_extras_dark", ui::drawHome(x, ui::LOOK_DARK));
+      SHOT("73_extras_color", ui::drawHome(x, ui::LOOK_COLOR));
+      SHOT("74_extras_night", ui::drawHome(x, ui::LOOK_NIGHT));
+      x.sensor = {ss::SENSOR_HOURS, 7};
+      SHOT("75_extras_lastday_dark", ui::drawHome(x, ui::LOOK_DARK));
+      x.tir = 100;
+      x.sensor = {ss::SENSOR_ENDED, 0};
+      SHOT("76_extras_ended_color", ui::drawHome(x, ui::LOOK_COLOR));
+      x.sensor = {ss::SENSOR_GRACE, 12};
+      SHOT("77_extras_grace_night", ui::drawHome(x, ui::LOOK_NIGHT));
+      x.tir = 82;
+      x.sensor = {ss::SENSOR_NONE, 0};
+      SHOT("78_extras_only_tir_dark", ui::drawHome(x, ui::LOOK_DARK));
+      SHOT("78b_extras_only_tir_night", ui::drawHome(x, ui::LOOK_NIGHT));
+      x.tir = -1;
+      x.sensor = {ss::SENSOR_DAYS, 14};
+      SHOT("79_extras_only_sensor_color", ui::drawHome(x, ui::LOOK_COLOR));
+      x.tir = 100;
+      x.sensor = {ss::SENSOR_GRACE, 12};
+      x.clock12 = true;
+      SHOT("80_extras_clock12_dark", ui::drawHome(x, ui::LOOK_DARK));
+      SHOT("81_extras_clock12_night", ui::drawHome(x, ui::LOOK_NIGHT));
+      x.clock12 = false;
+      x.showGraph = false;
+      x.tir = 82;
+      x.sensor = {ss::SENSOR_DAYS, 5};
+      SHOT("82_extras_nograph_color", ui::drawHome(x, ui::LOOK_COLOR));
+      x.showGraph = true;
+      // a reading that is no longer current: the line stays (the day's
+      // percent and the sensor's date do not depend on a fresh reading)
+      series(s, 3, 23, 118, 20, false);
+      SHOT("83_extras_stale_dark", ui::drawHome(x, ui::LOOK_DARK));
+      // the link is down: its label stands in that corner, the line gives way
+      x.st.wifi = false;
+      SHOT("84_extras_nowifi_dark", ui::drawHome(x, ui::LOOK_DARK));
+      x.st.wifi = true;
+      series(s, 3, 2, 104, 26, false);
+
+      // The line never reaches the clock: every percent, every phase with its
+      // widest number, on both clocks, at the three lengths the fit picks from.
+      int tinyUsed = 0, smallUsed = 0, medUsed = 0;
+      for (int mode = 0; mode < 2; mode++) {
+        ui::View m = v;
+        m.clock12 = mode == 1;
+        const int start = ui::LOCKUP_X + gx::textW(F_MARK, "M") + 7;
+        const int room = ui::extrasRoom(m, start);
+        const ss::SensorLeft phases[5] = {{ss::SENSOR_NONE, 0}, {ss::SENSOR_DAYS, 15}, {ss::SENSOR_HOURS, 24}, {ss::SENSOR_GRACE, 12}, {ss::SENSOR_ENDED, 0}};
+        for (int tir = -1; tir <= 100; tir++)
+          for (const ss::SensorLeft &ph : phases) {
+            m.tir = tir;
+            m.sensor = ph;
+            if (!ui::hasExtras(m)) continue;
+            char line[48];
+            const AAFont &lf = ui::extrasFit(m, ui::smallClockFont(m.clock12), room, line, sizeof(line));
+            CHECK(gx::textW(lf, line) <= room);
+            CHECK(strstr(line, CH_ELL) == nullptr);   // a form always fits: nothing is ever cut
+            if (&lf == &F_TINY) tinyUsed++;
+            else if (&lf == &F_SMALL) smallUsed++;
+            else medUsed++;
+            // the everyday line (a two-digit percent, days in one digit) is in the clock's own font
+            if (tir == 73 && ph.kind == ss::SENSOR_DAYS) {
+              m.sensor = {ss::SENSOR_DAYS, 7};
+              CHECK(&ui::extrasFit(m, ui::smallClockFont(m.clock12), room, line, sizeof(line)) == &ui::smallClockFont(m.clock12));
+              m.sensor = ph;
+            }
+          }
+      }
+      printf("extras fit %s: medium %d, small %d, tiny %d\n", o, medUsed, smallUsed, tinyUsed);
+      if (r == 1) CHECK(tinyUsed == 0);   // the wide screen never needs the tiny font
+      // the Night scene's stacked parts keep clear of the big clock on both clocks
+      if (r == 1)
+        for (int mode = 0; mode < 2; mode++) {
+          ui::View m = v;
+          m.clock12 = mode == 1;
+          const int room = ui::nightExtrasRoom(m);
+          const ss::SensorLeft phases[4] = {{ss::SENSOR_DAYS, 15}, {ss::SENSOR_HOURS, 24}, {ss::SENSOR_GRACE, 12}, {ss::SENSOR_ENDED, 0}};
+          char part[24];
+          for (int tir = 0; tir <= 100; tir++) {
+            m.tir = tir;
+            ui::extrasPart(m, false, room, part, sizeof(part));
+            CHECK(gx::textW(F_SMALL, part) <= room);
+          }
+          for (const ss::SensorLeft &ph : phases) {
+            m.sensor = ph;
+            ui::extrasPart(m, true, room, part, sizeof(part));
+            CHECK(gx::textW(F_SMALL, part) <= room);
+          }
+        }
+      // a followed person's view never carries the line
+      ui::View f = v;
+      f.personLabel = "Anna";
+      f.tir = 82;
+      CHECK(!ui::hasExtras(f));
+    }
+
     ui::Row disp[5] = {{"Brightness", "100%", ui::ROW_STEPPER}, {"Scene", "Auto", ui::ROW_CYCLE}, {"Graph", "3 hours", ui::ROW_CYCLE}, {"Rotate screen", "", ui::ROW_ACTION}, {"Sound", "On", ui::ROW_CYCLE}};
-    // Settings: the pages as tabs on top (three, four while the account follows someone)
-    static const char *const TABS[4] = {"Display", "Night", "System", "People"};
-    SHOT("18_settings_display", ui::drawSettings(TABS, 3, 0, nullptr, disp, 5));
-    SHOT("18b_settings_display_four", ui::drawSettings(TABS, 4, 0, nullptr, disp, 5));
+    // Settings: the pages as tabs on top (four, five while the account follows someone)
+    static const char *const TABS[5] = {"Display", "Night", "Extras", "System", "People"};
+    SHOT("18_settings_display", ui::drawSettings(TABS, 4, 0, nullptr, disp, 5));
+    SHOT("18b_settings_display_five", ui::drawSettings(TABS, 5, 0, nullptr, disp, 5));
+    ui::Row extrasOff[2] = {{"Time in range today", "Off", ui::ROW_CYCLE}, {"Sensor days left", "Off", ui::ROW_CYCLE}};
+    SHOT("85_settings_extras_off", ui::drawSettings(TABS, 4, 2, "Off by default", extrasOff, 2));
+    ui::Row extrasOn[2] = {{"Time in range today", "On", ui::ROW_CYCLE}, {"Sensor days left", "On", ui::ROW_CYCLE}};
+    SHOT("86_settings_extras_on", ui::drawSettings(TABS, 4, 2, "Shown top left", extrasOn, 2));
+    SHOT("87_settings_extras_five", ui::drawSettings(TABS, 5, 2, "No sensor date", extrasOn, 2));
     ui::Row night[4] = {{"Night starts", "23:00", ui::ROW_STEPPER}, {"Night ends", "07:00", ui::ROW_STEPPER}, {"Night dim", "10%", ui::ROW_STEPPER}, {"Clock", "24-hour", ui::ROW_CYCLE}};
-    SHOT("25_settings_night", ui::drawSettings(TABS, 3, 1, nullptr, night, 4));
+    SHOT("25_settings_night", ui::drawSettings(TABS, 4, 1, nullptr, night, 4));
     ui::Row night12[4] = {{"Night starts", "11 PM", ui::ROW_STEPPER}, {"Night ends", "7 AM", ui::ROW_STEPPER}, {"Night dim", "10%", ui::ROW_STEPPER}, {"Clock", "12-hour", ui::ROW_CYCLE}};
-    SHOT("25b_settings_night_12h", ui::drawSettings(TABS, 3, 1, nullptr, night12, 4));
+    SHOT("25b_settings_night_12h", ui::drawSettings(TABS, 4, 1, nullptr, night12, 4));
     // every night hour, on either clock, keeps clear of the row's label: the
     // value ends 6 px before the minus button (ui::drawRows)
     for (int mode = 0; mode < 2; mode++)
@@ -516,13 +713,13 @@ static int runRender(const std::string &dir) {
                       {"UTC offset", "+5:30", ui::ROW_STEPPER},
                       {"Wi-Fi", "Guest_Network_With_A_Long_Name", ui::ROW_ACTION},
                       {"Disconnect", "", ui::ROW_ACTION}};
-    SHOT("19_settings_system", ui::drawSettings(TABS, 4, 2, "Version 0.4.4", sys, 5));
+    SHOT("19_settings_system", ui::drawSettings(TABS, 5, 3, "Version 0.5.0", sys, 5));
     // the longest value a settings row carries fits beside its label, upright too
     CHECK(gx::textW(F_MED, "Time zone") + 12 + gx::textW(F_MED, "Auto (+14:00)") <= gx::W - 20 - 32);
     ui::Row sysAuto[3] = {{"Time zone", "Auto (+4:00)", ui::ROW_CYCLE},
                           {"Wi-Fi", "Home 5G", ui::ROW_ACTION},
                           {"Disconnect", "", ui::ROW_ACTION}};
-    SHOT("26_settings_system_auto", ui::drawSettings(TABS, 3, 2, "Version 0.4.4", sysAuto, 3));
+    SHOT("26_settings_system_auto", ui::drawSettings(TABS, 4, 3, "Version 0.5.0", sysAuto, 3));
     SHOT("27_update", ui::drawUpdate("0.3.3", "app.sugarsense.io/install"));
     // a newer firmware exists: the quiet dot beside the three
     series(s, 3, 2, 104, 26, false);
@@ -620,11 +817,11 @@ static int runRender(const std::string &dir) {
           }
         }
       }
-      static const char *const TABS4[4] = {"Display", "Night", "System", "People"};
-      SHOT("53_settings_people", ui::drawSettings(TABS4, 4, 3, "Up to 4 at once", people, 5));
+      SHOT("53_settings_people", ui::drawSettings(TABS, 5, 4, "Up to 4 at once", people, 5));
     }
   }
-  return 0;
+  if (failures) printf("render: %d FAILED\n", failures);
+  return failures ? 1 : 0;
 }
 
 int main(int argc, char **argv) {

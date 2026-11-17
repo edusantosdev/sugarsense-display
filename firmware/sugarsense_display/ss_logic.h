@@ -279,6 +279,74 @@ static inline bool selectionToggle(char *sel, size_t room, const char *id) {
   return true;
 }
 
+// ---- the two optional lines (Settings > Extras, both off by default) ----------
+// Time in Range today arrives as a whole percent. The sensor arrives as the
+// moment it ends (and the end of its grace, for a model that has one), and
+// the display counts down by its own clock. The phases are the app's: whole
+// days while more than a day is left, hours in the last day, the grace,
+// "ended" for a week after the end, then nothing.
+enum { SENSOR_NONE = 0, SENSOR_DAYS = 1, SENSOR_HOURS = 2, SENSOR_GRACE = 3, SENSOR_ENDED = 4 };
+
+struct SensorLeft { int kind; int n; };
+
+static const int64_t HOUR_MS = 3600000;
+static const int64_t DAY_MS = 86400000;
+static const int64_t SENSOR_ENDED_SHOWN_MS = 7 * DAY_MS;
+static const int64_t SENSOR_MAX_LEFT_MS = 400 * DAY_MS;   // further away than this is not a sensor's end
+
+// Hours left, rounded up, never less than one.
+static inline int hoursUp(int64_t ms) {
+  const int64_t h = (ms + HOUR_MS - 1) / HOUR_MS;
+  return h < 1 ? 1 : (int)h;
+}
+
+static inline SensorLeft sensorLeft(int64_t nowMs, int64_t endsAtMs, int64_t graceEndsAtMs) {
+  if (endsAtMs <= 0 || nowMs <= 0) return {SENSOR_NONE, 0};
+  const int64_t left = endsAtMs - nowMs;
+  if (left > SENSOR_MAX_LEFT_MS) return {SENSOR_NONE, 0};
+  if (left > DAY_MS) return {SENSOR_DAYS, (int)(left / DAY_MS)};
+  if (left > 0) return {SENSOR_HOURS, hoursUp(left)};
+  if (graceEndsAtMs > endsAtMs && nowMs < graceEndsAtMs) return {SENSOR_GRACE, hoursUp(graceEndsAtMs - nowMs)};
+  if (nowMs < endsAtMs + SENSOR_ENDED_SHOWN_MS) return {SENSOR_ENDED, 0};
+  return {SENSOR_NONE, 0};
+}
+
+// The sensor's part in three lengths: 0 in full ("Sensor 5d left"), 1 brief
+// ("5d left": the word leaves in every phase, so the brief forms read as one
+// countdown, "5d left", "7h left", "ended"), 2 bare ("5d"). Empty for no sensor.
+static inline void sensorText(char *out, size_t n, SensorLeft s, int level) {
+  out[0] = '\0';
+  switch (s.kind) {
+    case SENSOR_DAYS: snprintf(out, n, level == 0 ? "Sensor %dd left" : (level == 1 ? "%dd left" : "%dd"), s.n); break;
+    case SENSOR_HOURS: snprintf(out, n, level == 0 ? "Sensor %dh left" : (level == 1 ? "%dh left" : "%dh"), s.n); break;
+    case SENSOR_GRACE: snprintf(out, n, level == 0 ? "Sensor grace %dh" : "grace %dh", s.n); break;
+    case SENSOR_ENDED: snprintf(out, n, level == 0 ? "Sensor ended" : "ended"); break;
+    default: break;
+  }
+}
+
+// "82% in range", or "82%" where the room is short. Empty outside 0..100.
+static inline void tirText(char *out, size_t n, int tir, bool brief) {
+  out[0] = '\0';
+  if (tir < 0 || tir > 100) return;
+  snprintf(out, n, brief ? "%d%%" : "%d%% in range", tir);
+}
+
+// The one line both parts share, in EXTRAS_FORMS lengths, longest first:
+// 0 both in full, 1 the percent alone beside the sensor in full, 2 both
+// brief, 3 the sensor bare ("100% . 12d"). A part that stands alone keeps
+// its full words one step longer (it has the room of two). `sep` goes
+// between the two.
+static const int EXTRAS_FORMS = 4;
+
+static inline void extrasLine(char *out, size_t n, int tir, SensorLeft s, int form, const char *sep) {
+  char a[24], b[24];
+  const bool both = tir >= 0 && tir <= 100 && s.kind != SENSOR_NONE;
+  tirText(a, sizeof(a), tir, form >= (both ? 1 : 2));
+  sensorText(b, sizeof(b), s, form <= 1 ? 0 : form - 1);
+  snprintf(out, n, "%s%s%s", a, (a[0] && b[0]) ? sep : "", b);
+}
+
 // The moment in an HTTP Date header ("Thu, 05 Nov 2026 07:22:46 GMT") as
 // seconds since 1970, UTC. The display sets its clock from the Date of our
 // own server's answers, so it keeps time on a network that blocks NTP.

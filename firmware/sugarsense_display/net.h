@@ -9,7 +9,8 @@
 //                                                    the pairing page
 //   POST /displayPairPoll  {pollSecret, deviceId} -> pending, then ONE session
 //                                                    token (displayToken)
-//   POST /getDisplaySnapshot {hours, people?}     -> the latest reading, the
+//   POST /getDisplaySnapshot {hours, people?,     -> the latest reading, the
+//        tir?, sensor?, utcOffsetMinutes?}
 //        Authorization: Bearer <displayToken>        account's limits and unit,
 //                                                    the trend points and the
 //                                                    clock offset; `followed`
@@ -17,7 +18,10 @@
 //                                                    follows) and `people`
 //                                                    (the followed ones asked
 //                                                    for, each with their own
-//                                                    reading) since 0.4.0
+//                                                    reading) since 0.4.0;
+//                                                    `tirToday` and `sensor`
+//                                                    (when it ends) only when
+//                                                    asked for, since 0.5.0
 //   POST /displayUnpair {}                        -> ends the session
 //        Authorization: Bearer <displayToken>        ("Disconnect")
 // A device with no keyboard shows a code; the person confirms it on a page
@@ -214,12 +218,20 @@ static void read_reading(JsonObject r, int hours, bool *hasValue, double *mgdl, 
 // session is gone, pair again. `people` names the followed people the screen
 // shows (their ids, comma-separated, at most four); `peoplePoints` asks for
 // the whole window of the one person shown alone, else each person comes
-// with the two newest readings only (enough for the change).
-static int api_snapshot(const char *token, int hours, const char *people, bool peoplePoints, ui::Snapshot &out) {
+// with the two newest readings only (enough for the change). `wantTir` and
+// `wantSensor` are the two lines of Settings > Extras: asked for only while
+// the person has them on, with the clock offset the display shows, so
+// "today" is the day on its own clock.
+static int api_snapshot(const char *token, int hours, const char *people, bool peoplePoints, bool wantTir, bool wantSensor, int tzMin, ui::Snapshot &out) {
   JsonDocument body;
   body["hours"] = hours;
   body["model"] = SS_MODEL;
   body["appVersion"] = FW_VERSION;
+  if (wantTir) {
+    body["tir"] = true;
+    body["utcOffsetMinutes"] = tzMin;
+  }
+  if (wantSensor) body["sensor"] = true;
   if (people && people[0]) {
     JsonArray ids = body["people"].to<JsonArray>();
     const char *p = people;
@@ -260,6 +272,17 @@ static int api_snapshot(const char *token, int hours, const char *people, bool p
   snprintf(s.appUrl, sizeof(s.appUrl), "%s", strncmp(app, "https://", 8) == 0 && strlen(app) < sizeof(s.appUrl) ? app : SS_APP_URL);
   if (s.state == ss::STATE_OK) {
     read_reading(r, hours, &s.hasValue, &s.mgdl, &s.dateMs, &s.arrow, &s.isMmol, &s.band, s.pts, &s.npts, &s.hours);
+    // the two optional lines: present only when asked for and known
+    if (r["tirToday"].is<int>()) {
+      const int tir = r["tirToday"] | -1;
+      s.tir = (tir >= 0 && tir <= 100) ? tir : -1;
+    }
+    s.sensorAsked = wantSensor;
+    JsonObject sensor = r["sensor"];
+    if (!sensor.isNull()) {
+      s.sensorEndsAt = sensor["endsAt"] | (int64_t)0;
+      s.sensorGraceEndsAt = sensor["graceEndsAt"] | (int64_t)0;
+    }
   }
   // everyone this account follows (the People page), then the ones asked for
   for (JsonObject f : r["followed"].as<JsonArray>()) {
